@@ -1,4 +1,4 @@
-# Mousstaa-TP-Monte-Carlo-Tree-Search
+# TP-Monte-Carlo-Tree-Search
 ![Image description](Graphs.png)
 ## Remarks
 We notice that the MCTS algorithms that was implemented isn't as efficient as the Astar in terms of Speed and steps it takes to solve the problem
