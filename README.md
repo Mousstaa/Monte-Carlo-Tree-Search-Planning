@@ -1,4 +1,6 @@
 # TP-Monte-Carlo-Tree-Search
+Monte Carlo Tree Search algorithm with pure random walks to solve pddl problems
+By: Moustafa Mohamed, M2 IC
 ![Image description](Graphs.png)
 ## Remarks
 We notice that the MCTS algorithms that was implemented isn't as efficient as the Astar in terms of Speed and steps it takes to solve the problem
