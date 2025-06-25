@@ -16,7 +16,7 @@ This repository contains the implementation of a Monte Carlo Tree Search (MCTS) 
 
 ---
 
-## Visual Comparison
+## Results
 
 The following figure summarizes the performance (runtime and plan length) of all three planners (A*, MCTS with pure random walks, and MCTS with MDA & MHA) across all domains:
 
