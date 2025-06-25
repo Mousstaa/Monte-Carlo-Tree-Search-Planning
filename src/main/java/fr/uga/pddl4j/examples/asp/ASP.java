@@ -31,6 +31,8 @@ import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.Map;
+import java.util.HashMap;
 
 import fr.uga.pddl4j.examples.asp.Node;
 
@@ -66,6 +68,25 @@ public class ASP extends AbstractPlanner {
 	 * configuration.
 	 */
 	public static final double DEFAULT_WEIGHT_HEURISTIC = 1.0;
+
+	/**
+	 * MDA: Monte-Carlo Deadlock Avoidance tracking
+	 */
+	private final Map<Integer, Integer> successfulWalks = new HashMap<>(); // S(a)
+	private final Map<Integer, Integer> failedWalks = new HashMap<>(); // F(a)
+
+	/**
+	 * MHA: Monte-Carlo with Helpful Actions tracking
+	 */
+	private final Map<Integer, Integer> helpfulActionCounts = new HashMap<>(); // Q(a) for MHA
+
+	/**
+	 * Statistics for deciding when to use MDA/MHA
+	 */
+	private int totalRandomWalks = 0;
+	private int deadEndWalks = 0;
+	private double totalBranchingFactor = 0.0;
+	private int branchingFactorSamples = 0;
 
 	/**
 	 * The weight of the heuristic.
@@ -122,23 +143,23 @@ public class ASP extends AbstractPlanner {
 	 */
 	@Override
 	public Plan solve(final Problem problem) {
-	    LOGGER.info("* Starting A* search \n");
-	    // Search a solution
-	    final long begin = System.currentTimeMillis();
-	    //Keep "astar" to solve using astar algoritm or replace "astar" 
-	    //with "MCTS" to solve using Monte Carlo algorithm
-	    final Plan plan = this.astar(problem);
-	    final long end = System.currentTimeMillis();
-	    // If a plan is found update the statistics of the planner
-	    // and log search information
-	    if (plan != null) {
-	        LOGGER.info("* A* search succeeded\n");
-	        this.getStatistics().setTimeToSearch(end - begin);
-	    } else {
-	        LOGGER.info("* A* search failed\n");
-	    }
-	    // Return the plan found or null if the search fails.
-	    return plan;
+		LOGGER.info("* Starting A* search \n");
+		// Search a solution
+		final long begin = System.currentTimeMillis();
+		// Keep "astar" to solve using astar algoritm or replace "astar"
+		// with "MCTS" to solve using Monte Carlo algorithm
+		final Plan plan = this.MCTS(problem);
+		final long end = System.currentTimeMillis();
+		// If a plan is found update the statistics of the planner
+		// and log search information
+		if (plan != null) {
+			LOGGER.info("* A* search succeeded\n");
+			this.getStatistics().setTimeToSearch(end - begin);
+		} else {
+			LOGGER.info("* A* search failed\n");
+		}
+		// Return the plan found or null if the search fails.
+		return plan;
 	}
 
 	/**
@@ -188,7 +209,7 @@ public class ASP extends AbstractPlanner {
 	public final double getHeuristicWeight() {
 		return this.heuristicWeight;
 	}
-	
+
 	/**
 	 * Returns the configuration of the planner.
 	 *
@@ -255,13 +276,11 @@ public class ASP extends AbstractPlanner {
 	 *
 	 * @param args the arguments of the command line.
 	 */
-	
-	
-	
+
 	////////////////////////////////////////////////////////////////////////////////////////
 	/////////////////////////// ASTAR IMPLEMENTATION////////////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////////////////// 
 	////////////////////////////////////////////////////////////////////////////////////////
-
 
 	/**
 	 * Search a solution plan for a planning problem using an A* search strategy.
@@ -346,59 +365,69 @@ public class ASP extends AbstractPlanner {
 	}
 	////////////////////////////////////////////////////////////////////////////////////////
 
-
-
 	////////////////////////////////////////////////////////////////////////////////////////
 	/////////////// MONTE CARLO TREE SEARCH IMPLEMENTATION//////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////////////////// 
 	////////////////////////////////////////////////////////////////////////////////////////
 
 	private final int MAX_STEPS = 10;
+	private final double MDA_THRESHOLD = 0.3; // 30% dead-end threshold
+	private final double MHA_THRESHOLD = 100.0; // average branching factor threshold
+	private final int MIN_SAMPLES = 50;
+
+	// Performance optimization: cache action indices
+	private final Map<Action, Integer> actionIndexCache = new HashMap<>();
 
 	public Plan MCTS(Problem problem) {
-	    // Initialize the heuristic
-	    StateHeuristic heuristic = StateHeuristic.getInstance(getHeuristic(), problem);
+		// Initialize the heuristic
+		StateHeuristic heuristic = StateHeuristic.getInstance(getHeuristic(), problem);
 
-	    // Get the initial state of the problem
-	    State initialState = new State(problem.getInitialState());
+		// Get the initial state of the problem
+		State initialState = new State(problem.getInitialState());
 
-	    // Create the goal condition
-	    final Goal goal = new Goal(problem.getGoal());
+		// Create the goal condition
+		final Goal goal = new Goal(problem.getGoal());
 
-	    // Initialize the node associated with the initial state
-	    Node currentNode = new Node(initialState, null, -1, 0, 0, heuristic.estimate(initialState, problem.getGoal()));
+		// Initialize the node associated with the initial state
+		Node currentNode = new Node(initialState, null, -1, 0, 0, heuristic.estimate(initialState, problem.getGoal()));
 
-	    // Get the heuristic value of the current node
-	    double minHeuristic = currentNode.getHeuristic();
+		// Get the heuristic value of the current node
+		double minHeuristic = currentNode.getHeuristic();
 
-	    // Initialize the counter
-	    int counter = 0;
+		// Initialize the counter
+		int counter = 0;
 
-	    // Keep iterating until the current node satisfies the goal condition
-	    while (!currentNode.satisfy(goal)) {
-	        // If the counter exceeds the maximum number of iterations or the current node is a dead end, reset the current node to the initial state and reset the counter
-	        if (counter > MAX_STEPS || DeadEnd(currentNode, problem)) {
-	            currentNode = new Node(initialState, null, -1, 0, 0, heuristic.estimate(initialState, problem.getGoal()));
-	            counter = 0;
-	        }
+		// Keep iterating until the current node satisfies the goal condition
+		while (!currentNode.satisfy(goal)) {
+			// If the counter exceeds the maximum number of iterations or the current node
+			// is a dead end, reset the current node to the initial state and reset the
+			// counter
+			if (counter > MAX_STEPS || DeadEnd(currentNode, problem)) {
+				currentNode = new Node(initialState, null, -1, 0, 0,
+						heuristic.estimate(initialState, problem.getGoal()));
+				counter = 0;
+			}
 
-	        // Find the best node from the current node based on the Monte Carlo Tree Search algorithm
-	        currentNode = findBestNode(currentNode, problem, heuristic);
-	        // If the heuristic value of the current node is less than the current minimum heuristic value, update the minimum heuristic value and reset the counter
-	        if (currentNode.getHeuristic() < minHeuristic) {
-	            minHeuristic = currentNode.getHeuristic();
-	            counter = 0;
-	        } else {
-	            // If the heuristic value of the current node is not less than the current minimum heuristic value, increment the counter
-	            counter++;
-	        }
-	    }
+			// Find the best node from the current node based on the enhanced Monte Carlo
+			// Tree Search algorithm
+			currentNode = findBestNodeEnhanced(currentNode, problem, heuristic);
+			// If the heuristic value of the current node is less than the current minimum
+			// heuristic value, update the minimum heuristic value and reset the counter
+			if (currentNode.getHeuristic() < minHeuristic) {
+				minHeuristic = currentNode.getHeuristic();
+				counter = 0;
+			} else {
+				// If the heuristic value of the current node is not less than the current
+				// minimum heuristic value, increment the counter
+				counter++;
+			}
+		}
 
-	    // Extract and return the plan from the current node
-	    return extractPlan(currentNode, problem);
+		// Extract and return the plan from the current node
+		return extractPlan(currentNode, problem);
 	}
 
-
-	public Node findBestNode(Node currentNode, Problem problem, StateHeuristic heuristic) {
+	public Node findBestNodeEnhanced(Node currentNode, Problem problem, StateHeuristic heuristic) {
 		// Number of iterations to perform for the Monte Carlo random walk
 		final int NUM_WALK = 2000;
 		// Length of each random walk
@@ -408,37 +437,87 @@ public class ASP extends AbstractPlanner {
 		// Initialize minimum heuristic value to a very high number
 		double minHeuristic = Double.MAX_VALUE;
 
+		// Check if we should use MDA or MHA
+		boolean useMDA = shouldUseMDA();
+		boolean useMHA = shouldUseMHA();
+
 		// Perform the Monte Carlo random walk numIterations times
 		for (int i = 0; i < NUM_WALK; i++) {
+			totalRandomWalks++;
+
+			// Track actions used in this walk for MDA
+			Set<Integer> actionsInWalk = new HashSet<>();
+			boolean walkHitDeadEnd = false;
+
 			// Start the random walk at the current node
 			Node testNode = currentNode;
+
 			// Perform the random walk for walkLength steps
 			for (int j = 0; j < LENGTH_WALK; j++) {
 				// Get a list of applicable actions for the current state
 				List<Action> applicableActions = getActions(testNode, problem);
-				// Shuffle the list of actions to choose a random action
-				Collections.shuffle(applicableActions);
-				// Select the first action in the shuffled list (which is now randomly chosen)
-				Action randomAction = applicableActions.get(0);
+
+				// Update branching factor statistics
+				totalBranchingFactor += applicableActions.size();
+				branchingFactorSamples++;
+
+				// Check for dead-end
+				if (applicableActions.isEmpty()) {
+					walkHitDeadEnd = true;
+					deadEndWalks++;
+					break;
+				}
+
+				// Select action based on strategy
+				Action selectedAction;
+				int actionIndex;
+
+				if (useMDA) {
+					// Use MDA strategy - select action with best Q(a) score
+					selectedAction = selectActionMDA(applicableActions, problem);
+					actionIndex = problem.getActions().indexOf(selectedAction);
+				} else if (useMHA) {
+					// Use MHA strategy - prefer helpful actions
+					selectedAction = selectActionMHA(applicableActions, problem, testNode, heuristic);
+					actionIndex = problem.getActions().indexOf(selectedAction);
+				} else {
+					// Use pure random selection
+					Collections.shuffle(applicableActions);
+					selectedAction = applicableActions.get(0);
+					actionIndex = problem.getActions().indexOf(selectedAction);
+				}
+
+				// Track action for MDA
+				actionsInWalk.add(actionIndex);
+
 				// Get the list of conditional effects for the selected action
-				final List<ConditionalEffect> effects = randomAction.getConditionalEffects();
+				final List<ConditionalEffect> effects = selectedAction.getConditionalEffects();
 				// Create a new state based on the current node
 				State newState = new State(testNode);
 				// Apply the effects of the selected action to the new state
 				newState.apply(effects);
 				// Create a new child node based on the new state and the current node
-				Node childNode = new Node(newState, testNode, problem.getActions().indexOf(randomAction),
+				Node childNode = new Node(newState, testNode, actionIndex,
 						testNode.getCost() + 1, testNode.getDepth() + 1, 0);
 				// Set the heuristic value for the child node
 				childNode.setHeuristic(heuristic.estimate(childNode, problem.getGoal()));
-				// Set the current node to the child node for the next iteration of the inner
-				// loop
+				// Set the current node to the child node for the next iteration of the inner loop
 				testNode = childNode;
 
-				// If the current node satisfies the goal, return it
+				// If the current node satisfies the goal, update MDA statistics and return
 				if (testNode.satisfy(problem.getGoal())) {
+					updateMDAStatistics(actionsInWalk, false); // successful walk
+					updateMHAStatistics(testNode, problem, heuristic); // update helpful actions
 					return testNode;
 				}
+			}
+
+			// Update MDA statistics for this walk
+			updateMDAStatistics(actionsInWalk, walkHitDeadEnd);
+
+			// Update MHA statistics if we have a valid endpoint
+			if (!walkHitDeadEnd) {
+				updateMHAStatistics(testNode, problem, heuristic);
 			}
 
 			// If the heuristic value of the current node is less than the current minimum
@@ -460,44 +539,178 @@ public class ASP extends AbstractPlanner {
 	/**
 	 * Determines if the given node is a dead end in the given problem.
 	 *
-	 * A node is considered a dead end if there are no applicable actions for the current state.
+	 * A node is considered a dead end if there are no applicable actions for the
+	 * current state.
 	 *
-	 * @param node the node to check
+	 * @param node    the node to check
 	 * @param problem the problem the node belongs to
 	 * @return true if the node is a dead end, false otherwise
 	 */
 	public boolean DeadEnd(Node node, Problem problem) {
-	    // Get a list of applicable actions for the current state
-	    List<Action> applicableActions = getActions(node, problem);
-	    // Return true if the list of applicable actions is empty (i.e., there are no actions that can be taken from the current state)
-	    return applicableActions.isEmpty();
+		// Get a list of applicable actions for the current state
+		List<Action> applicableActions = getActions(node, problem);
+		// Return true if the list of applicable actions is empty (there are no
+		// actions that can be taken from the current state)
+		return applicableActions.isEmpty();
 	}
 
-
 	/**
-	 * Gets a list of actions that are applicable for the given node in the given problem.
+	 * Gets a list of actions that are applicable for the given node in the given
+	 * problem.
 	 *
-	 * @param node the node to check
+	 * @param node    the node to check
 	 * @param problem the problem the node belongs to
 	 * @return a list of applicable actions
 	 */
 	public static List<Action> getActions(Node node, Problem problem) {
-	    // Initialize an empty list of applicable actions
-	    List<Action> applicableActions = new ArrayList<>();
-	    // Iterate through all actions in the problem
-	    for (Action action : problem.getActions()) {
-	        // If the action is applicable for the given node, add it to the list of applicable actions
-	        if (action.isApplicable(node)) {
-	            applicableActions.add(action);
-	        }
-	    }
-	    // Return the list of applicable actions
-	    return applicableActions;
+		// Initialize an empty list of applicable actions
+		List<Action> applicableActions = new ArrayList<>();
+		// Iterate through all actions in the problem
+		for (Action action : problem.getActions()) {
+			// If the action is applicable for the given node, add it to the list of
+			// applicable actions
+			if (action.isApplicable(node)) {
+				applicableActions.add(action);
+			}
+		}
+		return applicableActions;
 	}
 
+	/**
+	 * Check if MDA should be used (more than 50% of walks hit dead-ends)
+	 */
+	private boolean shouldUseMDA() {
+		if (totalRandomWalks < 100)
+			return false;
+		return (double) deadEndWalks / totalRandomWalks > MDA_THRESHOLD;
+	}
+
+	/**
+	 * Check if MHA should be used (average branching factor > 1000)
+	 */
+	private boolean shouldUseMHA() {
+		if (branchingFactorSamples < 100)
+			return false; // Need some samples first
+		return totalBranchingFactor / branchingFactorSamples > MHA_THRESHOLD;
+	}
+
+	/**
+	 * Select action using MDA strategy
+	 */
+	private Action selectActionMDA(List<Action> applicableActions, Problem problem) {
+		Action bestAction = null;
+		double bestScore = Double.NEGATIVE_INFINITY;
+
+		for (Action action : applicableActions) {
+			int actionIndex = problem.getActions().indexOf(action);
+			double score = getMDAScore(actionIndex);
+
+			if (score > bestScore) {
+				bestScore = score;
+				bestAction = action;
+			}
+		}
+
+		// If all actions have the same score, select randomly
+		if (bestAction == null) {
+			Collections.shuffle(applicableActions);
+			bestAction = applicableActions.get(0);
+		}
+
+		return bestAction;
+	}
+
+	/**
+	 * Select action using MHA strategy
+	 */
+	private Action selectActionMHA(List<Action> applicableActions, Problem problem, Node node,
+			StateHeuristic heuristic) {
+		List<Action> helpfulActions = new ArrayList<>();
+
+		for (Action action : applicableActions) {
+			int actionIndex = problem.getActions().indexOf(action);
+			if (helpfulActionCounts.getOrDefault(actionIndex, 0) > 0) {
+				helpfulActions.add(action);
+			}
+		}
+
+		// If we have helpful actions, select the most helpful one
+		if (!helpfulActions.isEmpty()) {
+			Action bestAction = null;
+			int maxHelpfulCount = 0;
+
+			for (Action action : helpfulActions) {
+				int actionIndex = problem.getActions().indexOf(action);
+				int count = helpfulActionCounts.getOrDefault(actionIndex, 0);
+				if (count > maxHelpfulCount) {
+					maxHelpfulCount = count;
+					bestAction = action;
+				}
+			}
+
+			if (bestAction != null) {
+				return bestAction;
+			}
+		}
+
+		// Fall back to random selection
+		Collections.shuffle(applicableActions);
+		return applicableActions.get(0);
+	}
+
+	/**
+	 * Calculate MDA score for an action: Q(a) = -F(a)/(S(a) + F(a))
+	 */
+	private double getMDAScore(int actionIndex) {
+		int successful = successfulWalks.getOrDefault(actionIndex, 0);
+		int failed = failedWalks.getOrDefault(actionIndex, 0);
+
+		if (successful + failed == 0) {
+			return 0.0;
+		}
+
+		return -(double) failed / (successful + failed);
+	}
+
+	/**
+	 * Update MDA statistics after a walk
+	 */
+	private void updateMDAStatistics(Set<Integer> actionsInWalk, boolean walkFailed) {
+		for (int actionIndex : actionsInWalk) {
+			if (walkFailed) {
+				failedWalks.put(actionIndex, failedWalks.getOrDefault(actionIndex, 0) + 1);
+			} else {
+				successfulWalks.put(actionIndex, successfulWalks.getOrDefault(actionIndex, 0) + 1);
+			}
+		}
+	}
+
+	/**
+	 * Update MHA statistics - identify helpful actions at endpoint
+	 */
+	private void updateMHAStatistics(Node endpoint, Problem problem, StateHeuristic heuristic) {
+
+		List<Action> applicableActions = getActions(endpoint, problem);
+
+		for (Action action : applicableActions) {
+			State newState = new State(endpoint);
+			final List<ConditionalEffect> effects = action.getConditionalEffects();
+			for (ConditionalEffect ce : effects) {
+				if (endpoint.satisfy(ce.getCondition())) {
+					newState.apply(ce.getEffect());
+				}
+			}
+
+			double newHeuristic = heuristic.estimate(newState, problem.getGoal());
+			if (newHeuristic < endpoint.getHeuristic()) {
+				int actionIndex = problem.getActions().indexOf(action);
+				helpfulActionCounts.put(actionIndex, helpfulActionCounts.getOrDefault(actionIndex, 0) + 1);
+			}
+		}
+	}
 
 	///////////////////////////////////////////////////////////////////////
-	
+
 	/**
 	 * Extracts a search from a specified node.
 	 *
@@ -521,7 +734,7 @@ public class ASP extends AbstractPlanner {
 			final ASP planner = new ASP();
 			CommandLine cmd = new CommandLine(planner);
 			planner.setTimeout(1000);
-			cmd.execute("pddl problems/gripper.pddl", "pddl problems/pgripper1.pddl");
+			cmd.execute(args);
 		} catch (IllegalArgumentException e) {
 			LOGGER.fatal(e.getMessage());
 		}
