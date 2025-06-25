@@ -12,7 +12,7 @@ This repository contains the implementation of a Monte Carlo Tree Search (MCTS) 
 
   * MCTS planner with pure random walks (PRW)
   * MCTS planner with Deadlock Avoidance (MDA) & helpful Actions (MHA) enhancements
-  * Baseline HSP A\* planner
+  * A\* planner
 
 ---
 
